@@ -7,6 +7,7 @@ import {
   PanelLeftOpen,
   RefreshCw,
   Search,
+  UploadCloud,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -26,7 +27,7 @@ import {
   normalizeLegacyLibraryLocation,
   normalizeLegacyLibrarySearch,
 } from "../lib/explorerTree";
-import { getMaterials, getProjects, revealMaterial, searchMaterialText } from "../lib/materials";
+import { formatBytes, getMaterials, getProjects, revealMaterial, searchMaterialText, uploadMaterials } from "../lib/materials";
 import { naturalProductionCompare, productionMetaFor, productionStageIndex } from "../lib/production";
 import { projectLibraryPath } from "../lib/routes";
 import type { MaterialAsset, MaterialDirectory, ProjectSummary } from "../types";
@@ -79,6 +80,13 @@ export function ProjectLibraryPage() {
   const [textSearchError, setTextSearchError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadFolder, setUploadFolder] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const layoutRef = useRef<HTMLElement>(null);
   const resizeStart = useRef({ pointerX: 0, sidebarWidth: DEFAULT_SIDEBAR_WIDTH });
   const resizing = useRef(false);
@@ -149,6 +157,61 @@ export function ProjectLibraryPage() {
   }, [projectId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const suggestedFolder = useMemo(() => {
+    if (!uploadFiles.length) return "";
+    const first = uploadFiles[0];
+    const ext = first.name.split(".").pop()?.toLowerCase() ?? "";
+    const isImage = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"].includes(ext);
+    const isVideo = ["mp4", "mov", "mkv", "webm", "avi", "m4v"].includes(ext);
+    const isAudio = ["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext);
+    const isText = ["md", "txt", "json", "srt", "vtt"].includes(ext);
+    if (isImage) return "图片/参考";
+    if (isVideo) return "视频/参考";
+    if (isAudio) return "音频/BGM";
+    if (isText) return "剧情/统一";
+    return "";
+  }, [uploadFiles]);
+
+  function openUpload() {
+    if (selectedPath) setUploadFolder(selectedPath);
+    else setUploadFolder(suggestedFolder || "");
+    setUploadFiles([]);
+    setUploadStatus(null);
+    setDragOver(false);
+    setUploadOpen(true);
+  }
+
+  function closeUpload() {
+    if (uploading) return;
+    setUploadOpen(false);
+    setUploadFiles([]);
+    setUploadStatus(null);
+  }
+
+  function pickFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const next = Array.from(files);
+    setUploadFiles((prev) => [...prev, ...next]);
+    setUploadStatus(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function submitUpload() {
+    if (!uploadFiles.length || uploading) return;
+    setUploading(true);
+    setUploadStatus(null);
+    try {
+      const result = await uploadMaterials(projectId, uploadFiles, uploadFolder.trim());
+      setUploadStatus({ kind: "ok", text: `已成功导入 ${result.count} 个文件到“${uploadFolder.trim() || "library 根目录"}”。` });
+      setUploadFiles([]);
+      await refresh();
+    } catch (reason) {
+      setUploadStatus({ kind: "error", text: reason instanceof Error ? reason.message : "上传失败" });
+    } finally {
+      setUploading(false);
+    }
+  }
 
   useEffect(() => {
     const normalized = query.trim();
@@ -328,7 +391,8 @@ export function ProjectLibraryPage() {
           <VideoPracticeNavLink compact />
           <Link className="course-link knowledge-link" to="/knowledge"><BrainCircuit size={18} /><span className="responsive-action-label" data-compact-label="知识库">导演知识库</span></Link>
           <Link className="course-link all-projects-link" to="/"><ArrowLeft size={18} /><span className="responsive-action-label" data-compact-label="项目">所有项目</span></Link>
-          <button className="primary-button open-library-button" type="button" onClick={openLibrary}><FolderOpen size={18} /><span className="responsive-action-label" data-compact-label="素材">打开素材文件夹</span></button>
+          <button className="primary-button upload-material-button" type="button" onClick={openUpload}><UploadCloud size={18} /><span className="responsive-action-label" data-compact-label="导入">导入素材</span></button>
+          <button className="secondary-button open-library-button" type="button" onClick={openLibrary}><FolderOpen size={18} /><span className="responsive-action-label" data-compact-label="素材">打开素材文件夹</span></button>
           <button className="secondary-button refresh-button" type="button" disabled={loading} onClick={() => void refresh()}>
             <RefreshCw size={18} className={loading ? "spinning" : ""} /><span className="responsive-action-label" data-compact-label="刷新">刷新</span>
           </button>
@@ -485,6 +549,67 @@ export function ProjectLibraryPage() {
               onOpenMaterial={(path) => openMaterial(path, "dialog")}
             />
           </FilePreviewDialog>
+        )}
+
+        {uploadOpen && (
+          <div className="upload-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeUpload(); }}>
+            <section className="upload-dialog" role="dialog" aria-modal="true" aria-label="导入素材">
+              <header className="upload-dialog-head">
+                <div><UploadCloud size={22} /><h2>导入素材</h2></div>
+                <button className="upload-close" type="button" onClick={closeUpload} disabled={uploading} aria-label="关闭"><X size={20} /></button>
+              </header>
+              <p className="upload-hint">文件会上传到项目 <code>library</code> 目录，支持多选与拖拽，单个文件最大 2 GB。</p>
+              <label className="upload-field">
+                <span>目标文件夹（相对 library，留空传到根目录）</span>
+                <input
+                  type="text"
+                  value={uploadFolder}
+                  onChange={(event) => { setUploadFolder(event.target.value); setUploadStatus(null); }}
+                  placeholder="例如：图片/人物/阿福 或 视频/成片"
+                />
+                {suggestedFolder && !uploadFolder && <small>留空时按文件类型自动建议：<code>{suggestedFolder}</code></small>}
+              </label>
+              <div
+                className={`upload-dropzone${dragOver ? " dragging" : ""}`}
+                onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(event) => { event.preventDefault(); setDragOver(false); pickFiles(event.dataTransfer.files); }}
+                onClick={() => fileInputRef.current?.click()}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") fileInputRef.current?.click(); }}
+              >
+                <UploadCloud size={34} />
+                <strong>点击选择文件，或把文件拖到这里</strong>
+                <span>图片 / 视频 / 音频 / 剧本文档都可以</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(event) => pickFiles(event.target.files)}
+                />
+              </div>
+              {uploadFiles.length > 0 && (
+                <ul className="upload-file-list">
+                  {uploadFiles.map((file, index) => (
+                    <li key={`${file.name}-${index}`}>
+                      <span className="upload-file-name" title={file.name}>{file.name}</span>
+                      <span className="upload-file-size">{formatBytes(file.size)}</span>
+                      <button type="button" aria-label={`移除 ${file.name}`} disabled={uploading} onClick={() => setUploadFiles((prev) => prev.filter((_, i) => i !== index))}><X size={14} /></button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {uploadStatus && <p className={`upload-status ${uploadStatus.kind}`} role="status">{uploadStatus.text}</p>}
+              <footer className="upload-dialog-foot">
+                <button className="secondary-button" type="button" onClick={closeUpload} disabled={uploading}>取消</button>
+                <button className="primary-button" type="button" disabled={!uploadFiles.length || uploading} onClick={() => void submitUpload()}>
+                  {uploading ? <><RefreshCw size={16} className="spinning" />正在导入…</> : <><UploadCloud size={16} />导入 {uploadFiles.length || ""} 个文件</>}
+                </button>
+              </footer>
+            </section>
+          </div>
         )}
       </main>
     </div>

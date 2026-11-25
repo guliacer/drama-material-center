@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { open as openFile, readFile, readdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { extname, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin, PreviewServer, ViteDevServer } from "vite";
@@ -37,6 +38,68 @@ const searchableTextExtensions = new Set([".md", ".txt"]);
 const MAX_SEARCHABLE_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_MATERIAL_SUMMARY_BYTES = 64 * 1024;
 const MAX_SEARCH_RESULTS = 200;
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_FIELDS = 400;
+
+interface UploadedFile {
+  fieldName: string;
+  fileName: string;
+  contentType: string;
+  data: Buffer;
+}
+
+/** 轻量 multipart/form-data 解析器：只处理文件字段，避免引入额外依赖。 */
+async function readMultipart(request: IncomingMessage, maxBytes: number): Promise<UploadedFile[]> {
+  const rawContentType = String(request.headers["content-type"] ?? "");
+  const boundaryMatch = rawContentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2]?.trim();
+  if (!boundary) throw new ProjectWorkspaceError("invalid_material", "上传请求缺少 multipart 边界。");
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) throw new ProjectWorkspaceError("invalid_material", "上传内容超过 2 GB 上限。");
+    chunks.push(buffer);
+  }
+  const body = Buffer.concat(chunks);
+  const delimiter = Buffer.from(`--${boundary}`);
+  const files: UploadedFile[] = [];
+  let cursor = body.indexOf(delimiter);
+  if (cursor < 0) throw new ProjectWorkspaceError("invalid_material", "上传内容格式无效。");
+
+  while (cursor >= 0) {
+    const headerStart = cursor + delimiter.length;
+    if (body.subarray(headerStart, headerStart + 2).toString() === "--") break;
+    const headerEnd = body.indexOf("\r\n\r\n", headerStart);
+    if (headerEnd < 0) break;
+    const nextBoundary = body.indexOf(delimiter, headerEnd + 4);
+    if (nextBoundary < 0) break;
+
+    const headerText = body.subarray(headerStart, headerEnd).toString("utf8");
+    const disposition = headerText.match(/content-disposition:\s*form-data;[^\r\n]*name="([^"]*)"[^\r\n]*filename="([^"]*)"/i);
+    if (disposition) {
+      const contentTypeMatch = headerText.match(/content-type:\s*([^\r\n]+)/i);
+      const rawFileName = disposition[2] ?? "";
+      const fileName = rawFileName.split(/[\\/]/).pop() ?? rawFileName;
+      const dataStart = headerEnd + 4;
+      const dataEnd = nextBoundary - 2; // 去掉边界前的 \r\n
+      if (fileName && dataEnd > dataStart) {
+        files.push({
+          fieldName: disposition[1] ?? "file",
+          fileName: decodeURIComponent(fileName),
+          contentType: contentTypeMatch?.[1]?.trim() ?? "application/octet-stream",
+          data: body.subarray(dataStart, dataEnd),
+        });
+      }
+    }
+    cursor = nextBoundary;
+  }
+
+  if (files.length === 0) throw new ProjectWorkspaceError("invalid_material", "没有收到任何文件。");
+  return files;
+}
 
 interface LibraryEntries {
   files: string[];
@@ -175,9 +238,10 @@ async function searchTextFiles(libraryRoot: string, query: string) {
 }
 
 function statusFor(error: ProjectWorkspaceError) {
-  if (error.code === "invalid_project" || error.code === "invalid_cover") return 400;
+  if (error.code === "invalid_project" || error.code === "invalid_cover" || error.code === "invalid_material") return 400;
   if (error.code === "invalid_index") return 422;
   if (error.code === "project_exists") return 409;
+  if (error.code === "invalid_path" || error.code === "material_not_found") return 404;
   return 404;
 }
 
@@ -208,6 +272,21 @@ function attachMaterialMiddleware(server: ViteDevServer | PreviewServer, workspa
           ...(typeof input.description === "string" ? { description: input.description } : {}),
         });
         sendJson(response, 201, { project });
+        return;
+      }
+
+      const uploadMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/upload$/);
+      if (uploadMatch && request.method === "POST") {
+        const projectId = decodeURIComponent(uploadMatch[1]);
+        const folder = (url.searchParams.get("folder") ?? "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+        const files = await readMultipart(request, MAX_UPLOAD_BYTES + 1024 * 1024);
+        const written: Array<{ path: string; size: number }> = [];
+        for (const file of files) {
+          const fileName = file.fileName.replace(/[\\/]/g, "_");
+          const relativePath = folder ? `${folder}/${fileName}` : fileName;
+          written.push(await workspace.writeMaterialFile(projectId, { path: relativePath, data: file.data }));
+        }
+        sendJson(response, 201, { files: written, count: written.length });
         return;
       }
 

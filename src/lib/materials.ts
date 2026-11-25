@@ -38,6 +38,26 @@ export async function getMaterials(projectId: string) {
   return response.json() as Promise<MaterialResponse>;
 }
 
+export interface UploadResult {
+  files: Array<{ path: string; size: number }>;
+  count: number;
+}
+
+/** 上传一个或多个素材到项目的 library 目录，可指定目标子文件夹（留空则传到 library 根目录）。 */
+export async function uploadMaterials(projectId: string, files: File[], folder = ""): Promise<UploadResult> {
+  if (!files.length) throw new Error("请先选择要上传的文件。");
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+
+  const query = folder ? `?folder=${encodeURIComponent(folder)}` : "";
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/upload${query}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) throw await responseError(response, "素材上传失败，请检查文件与网络后重试。");
+  return response.json() as Promise<UploadResult>;
+}
+
 export async function searchMaterialText(projectId: string, query: string, signal?: AbortSignal) {
   const response = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/search?q=${encodeURIComponent(query)}`,

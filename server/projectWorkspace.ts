@@ -27,9 +27,15 @@ export interface SetProjectCoverInput {
   data: Buffer;
 }
 
+export interface WriteMaterialInput {
+  /** library 内的相对路径，例如 "图片/人物/阿福/正面.png" */
+  path: string;
+  data: Buffer;
+}
+
 export class ProjectWorkspaceError extends Error {
   constructor(
-    readonly code: "invalid_project" | "invalid_cover" | "invalid_index" | "project_exists" | "project_not_found" | "material_not_found" | "invalid_path",
+    readonly code: "invalid_project" | "invalid_cover" | "invalid_index" | "project_exists" | "project_not_found" | "material_not_found" | "invalid_path" | "invalid_material",
     message: string,
   ) {
     super(message);
@@ -269,6 +275,58 @@ export function createProjectWorkspace(root: string) {
         throw new ProjectWorkspaceError("invalid_path", "素材路径超出了当前项目。");
       }
       return resolvedCandidate;
+    },
+
+    /**
+     * 将上传的素材写入 library 内指定相对路径。
+     * 严格防止目录穿越：先解析并 realpath 父目录，确认仍在 library 内才落盘。
+     */
+    async writeMaterialFile(projectId: string, input: WriteMaterialInput): Promise<{ path: string; size: number }> {
+      if (!(await readProject(root, projectId))) {
+        throw new ProjectWorkspaceError("project_not_found", "项目不存在。");
+      }
+
+      const rawPath = input.path.replaceAll("\\", "/").trim();
+      if (!rawPath || rawPath.startsWith("/") || rawPath.includes("\0")) {
+        throw new ProjectWorkspaceError("invalid_material", "素材路径无效。");
+      }
+      const segments = rawPath.split("/").filter((segment) => segment && segment !== "." && segment !== "..");
+      if (segments.length !== rawPath.split("/").length || segments.length === 0) {
+        throw new ProjectWorkspaceError("invalid_material", "素材路径不能包含 .. 或空目录。");
+      }
+      const safePath = segments.join("/");
+      const fileName = segments.at(-1) ?? "";
+      if (fileName.startsWith(".") || !fileName.includes(".") || fileName.endsWith(".")) {
+        throw new ProjectWorkspaceError("invalid_material", "素材文件必须有合法的文件名和扩展名。");
+      }
+      if (!input.data.length || input.data.length > 2 * 1024 * 1024 * 1024) {
+        throw new ProjectWorkspaceError("invalid_material", "素材文件不能为空，且不能超过 2 GB。");
+      }
+
+      const libraryRoot = join(root, projectId, "library");
+      let resolvedRoot: string;
+      try {
+        resolvedRoot = await realpath(libraryRoot);
+      } catch {
+        throw new ProjectWorkspaceError("project_not_found", "项目不存在。");
+      }
+
+      const targetPath = resolve(resolvedRoot, ...segments);
+      const parentDir = join(targetPath, "..");
+      await mkdir(parentDir, { recursive: true });
+
+      let resolvedParent: string;
+      try {
+        resolvedParent = await realpath(parentDir);
+      } catch {
+        throw new ProjectWorkspaceError("invalid_path", "素材目标目录不可访问。");
+      }
+      if (resolvedParent !== resolvedRoot && !resolvedParent.startsWith(`${resolvedRoot}${sep}`)) {
+        throw new ProjectWorkspaceError("invalid_path", "素材路径超出了当前项目。");
+      }
+
+      await writeAtomic(targetPath, input.data);
+      return { path: safePath, size: input.data.length };
     },
   };
 }

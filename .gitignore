@@ -29,3 +29,6 @@ director-knowledge-base/.media/
 
 # Python production-gate/test bytecode.
 __pycache__/
+
+# Local dev server logs.
+*.log
