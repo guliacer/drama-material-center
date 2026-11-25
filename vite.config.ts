@@ -7,6 +7,10 @@ import { weeklyRadarPlugin } from "./server/weeklyRadarPlugin.ts";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const extraHosts = (env.PREVIEW_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
   return {
     appType: "spa",
     test: {
@@ -28,6 +32,7 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: 4374,
       strictPort: true,
+      ...(extraHosts.length ? { allowedHosts: extraHosts } : {}),
     },
   };
 });
