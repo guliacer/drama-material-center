@@ -138,12 +138,24 @@ export async function login(): Promise<void> {
   window.location.assign(`${discovery.authorization_endpoint}?${params.toString()}`);
 }
 
+function setTokenCookie(token: string, maxAgeSeconds: number) {
+  const parts = [`drama_token=${encodeURIComponent(token)}`, "Path=/", "SameSite=Lax", `Max-Age=${Math.max(60, maxAgeSeconds)}`];
+  if (window.location.protocol === "https:") parts.push("Secure");
+  document.cookie = parts.join("; ");
+}
+
+function clearTokenCookie() {
+  document.cookie = "drama_token=; Path=/; SameSite=Lax; Max-Age=0";
+  if (window.location.protocol === "https:") document.cookie = "drama_token=; Path=/; SameSite=Lax; Max-Age=0; Secure";
+}
+
 async function storeTokens(tokens: TokenResponse) {
   window.localStorage.setItem(STORAGE.accessToken, tokens.access_token);
   if (tokens.refresh_token) window.localStorage.setItem(STORAGE.refreshToken, tokens.refresh_token);
   if (tokens.id_token) window.localStorage.setItem(STORAGE.idToken, tokens.id_token);
   const expiresIn = tokens.expires_in ?? 3600;
   window.localStorage.setItem(STORAGE.expiresAt, String(Date.now() + expiresIn * 1000));
+  setTokenCookie(tokens.access_token, expiresIn);
 
   const payload = decodeJwtPayload(tokens.id_token ?? tokens.access_token);
   if (payload) {
@@ -231,6 +243,7 @@ export function clearSession() {
     window.localStorage.removeItem(key);
     window.sessionStorage.removeItem(key);
   }
+  clearTokenCookie();
 }
 
 export async function logout(): Promise<void> {

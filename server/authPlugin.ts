@@ -57,13 +57,29 @@ export function authPlugin(options: AuthPluginOptions = {}): Plugin {
       }
 
       const header = request.headers.authorization;
-      const match = typeof header === "string" ? header.match(/^Bearer\s+(.+)$/i) : null;
-      if (!match) {
+      const bearer = typeof header === "string" ? header.match(/^Bearer\s+(.+)$/i)?.[1] : null;
+
+      // <img>/<video>/<audio> 等标签无法设置 Authorization 头，
+      // 因此前端登录成功后也会写入一个 token cookie，这里一并接受。
+      let cookieToken: string | null = null;
+      const cookieHeader = request.headers.cookie;
+      if (typeof cookieHeader === "string") {
+        for (const part of cookieHeader.split(";")) {
+          const [name, ...rest] = part.trim().split("=");
+          if (name === "drama_token") {
+            cookieToken = decodeURIComponent(rest.join("="));
+            break;
+          }
+        }
+      }
+
+      const token = bearer ?? cookieToken;
+      if (!token) {
         sendJson(response, 401, { error: "需要登录", code: "UNAUTHORIZED" });
         return;
       }
 
-      if (await verify(match[1])) {
+      if (await verify(token)) {
         next();
       } else {
         sendJson(response, 401, { error: "登录已过期或凭据无效", code: "INVALID_TOKEN" });

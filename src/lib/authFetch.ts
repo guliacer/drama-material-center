@@ -31,11 +31,16 @@ async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit):
   let response = await originalFetch(input, await attach(token));
 
   if (response.status === 401) {
-    try {
-      const refreshed = await ensureAccessToken();
-      if (refreshed) response = await originalFetch(input, await attach(refreshed));
-    } catch {
-      // 刷新失败由调用方处理 401。
+    // 只对幂等请求（GET/HEAD）重试：POST 的 body（尤其 FormData）已被消费，
+    // 重放会挂起或发出空请求体，导致"一直在导入中"卡死。
+    const method = (init?.method ?? (typeof input !== "string" && "method" in input ? input.method : "GET")).toUpperCase();
+    if (method === "GET" || method === "HEAD") {
+      try {
+        const refreshed = await ensureAccessToken();
+        if (refreshed) response = await originalFetch(input, await attach(refreshed));
+      } catch {
+        // 刷新失败由调用方处理 401。
+      }
     }
   }
   return response;
