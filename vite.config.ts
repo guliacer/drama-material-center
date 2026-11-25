@@ -1,6 +1,7 @@
 import { loadEnv } from "vite";
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { authPlugin } from "./server/authPlugin.ts";
 import { knowledgeCaseMediaPlugin } from "./server/knowledgeCaseMedia.ts";
 import { materialLibraryPlugin } from "./server/materialLibraryPlugin.ts";
 import { weeklyRadarPlugin } from "./server/weeklyRadarPlugin.ts";
@@ -18,6 +19,10 @@ export default defineConfig(({ mode }) => {
       exclude: [...configDefaults.exclude, "**/.agents/**"],
     },
     plugins: [
+      authPlugin({
+        issuer: env.GULI_IDENTITY_ISSUER,
+        userinfoUrl: env.GULI_IDENTITY_USERINFO_URL,
+      }),
       react(),
       weeklyRadarPlugin(),
       materialLibraryPlugin({ workspaceRoot: env.MATERIAL_CENTER_WORKSPACE }),
